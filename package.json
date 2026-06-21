@@ -1,0 +1,14 @@
+{
+  "name": "amd-fvg-telegram-bot-okx-v2",
+  "version": "5.0.0",
+  "description": "Railway Telegram signal bot: full JavaScript port of AMD x FVG Pine indicator logic, no TradingView alerts.",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}

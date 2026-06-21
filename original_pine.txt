@@ -1,0 +1,395 @@
+//@version=5
+indicator("AMD x FVG - v5 CONT ONLY PULLBACK REJECTION ENTRY ALERTS CLOSED", overlay=true, max_labels_count=500)
+
+// ─────────────────────────────────────────────────────────────
+// v5 CONT ONLY PULLBACK REJECTION ENTRY
+// Base = PULLBACK_ENTRY.
+// Main idea: same C, but entry is moved closer to point 1: rejection inside pullback edge, not confirmation after the move.
+// ─────────────────────────────────────────────────────────────
+
+gTrend = "1. TREND LOCK"
+trendMode = input.string("Auto", "Trend mode", options=["Auto", "Long only", "Short only", "Both"], group=gTrend)
+atrLen = input.int(14, "ATR length", minval=1, maxval=100, group=gTrend)
+fastEmaLen = input.int(34, "Fast EMA", minval=1, maxval=300, group=gTrend)
+slowEmaLen = input.int(89, "Slow EMA", minval=2, maxval=500, group=gTrend)
+pivotLen = input.int(4, "Swing pivot length", minval=1, maxval=20, group=gTrend)
+minEmaGapAtr = input.float(0.12, "Min EMA gap × ATR", minval=0.0, maxval=5.0, step=0.01, group=gTrend)
+minSlopeAtr = input.float(0.04, "Min slow EMA slope × ATR", minval=0.0, maxval=5.0, step=0.01, group=gTrend)
+blockRange = input.bool(true, "Block CONT in range", group=gTrend)
+allowBOSOverride = input.bool(true, "Allow trend flip after BOS", group=gTrend)
+
+gRange = "1B. ANTI RANGE / CHOP FILTER"
+useAntiRange = input.bool(true, "Strictly block sideways/range CONT", group=gRange)
+adxLen = input.int(14, "ADX length", minval=3, maxval=100, group=gRange)
+adxSmooth = input.int(14, "ADX smoothing", minval=3, maxval=100, group=gRange)
+minAdx = input.float(17.0, "Min ADX for CONT", minval=0.0, maxval=60.0, step=0.5, group=gRange)
+rangeMinEmaGapAtr = input.float(0.10, "Min EMA gap for CONT x ATR", minval=0.0, maxval=5.0, step=0.01, group=gRange)
+rangeMinSlopeAtr = input.float(0.035, "Min slow EMA slope for CONT x ATR", minval=0.0, maxval=5.0, step=0.005, group=gRange)
+trendProgressLookback = input.int(20, "Trend progress lookback bars", minval=5, maxval=200, group=gRange)
+minTrendProgressAtr = input.float(0.70, "Min trend progress x ATR", minval=0.0, maxval=20.0, step=0.05, group=gRange)
+
+gCorr = "2. CORRECTION"
+minCorrBars = input.int(2, "Min correction bars", minval=1, maxval=80, group=gCorr)
+maxCorrBars = input.int(80, "Max correction bars", minval=5, maxval=500, group=gCorr)
+minPullbackAtr = input.float(0.45, "Min pullback × ATR", minval=0.0, maxval=20.0, step=0.05, group=gCorr)
+minCorrRangeAtr = input.float(0.30, "Min correction range × ATR", minval=0.0, maxval=10.0, step=0.05, group=gCorr)
+maxEntryRangeAtr = input.float(2.8, "Max entry candle range × ATR", minval=0.5, maxval=20.0, step=0.1, group=gCorr)
+
+gEntry = "3. ENTRY"
+minSweepAtr = input.float(0.02, "Min sweep × ATR", minval=0.0, maxval=5.0, step=0.01, group=gEntry)
+reclaimBufferAtr = input.float(0.01, "Reclaim buffer × ATR", minval=0.0, maxval=5.0, step=0.01, group=gEntry)
+allowBreakoutContinuation = input.bool(false, "Allow correction breakout continuation", group=gEntry)
+allowStructuredPullbackBreakout = input.bool(false, "Allow structured pullback breakout", group=gEntry)
+structBreakoutBufferAtr = input.float(0.01, "Structured breakout buffer x ATR", minval=0.0, maxval=3.0, step=0.01, group=gEntry)
+structMinBodyAtr = input.float(0.08, "Structured breakout min body x ATR", minval=0.0, maxval=5.0, step=0.01, group=gEntry)
+structRequirePrevBarBreak = input.bool(true, "Structured breakout must break previous bar", group=gEntry)
+requireDirectionalClose = input.bool(true, "Require directional close", group=gEntry)
+minBarsBetweenSignals = input.int(6, "Min bars between C signals", minval=1, maxval=300, group=gEntry)
+sweepEntryMode = input.string("Hybrid", "Sweep entry mode", options=["Immediate", "Hybrid", "Confirmed"], group=gEntry)
+strongSweepAtr = input.float(0.04, "Hybrid: strong sweep x ATR", minval=0.0, maxval=5.0, step=0.01, group=gEntry)
+strongReclaimBufferAtr = input.float(0.02, "Hybrid: strong reclaim buffer x ATR", minval=0.0, maxval=5.0, step=0.01, group=gEntry)
+sweepConfirmBars = input.int(4, "Sweep confirmation window", minval=1, maxval=20, group=gEntry)
+requireMatureLocalSweep = input.bool(true, "Require mature local sweep", group=gEntry)
+matureSweepLookback = input.int(6, "Mature sweep lookback bars", minval=3, maxval=50, group=gEntry)
+matureSweepExcludeBars = input.int(2, "Ignore newest bars as liquidity", minval=1, maxval=10, group=gEntry)
+matureSweepBufferAtr = input.float(0.00, "Mature sweep buffer x ATR", minval=0.0, maxval=2.0, step=0.01, group=gEntry)
+
+
+gPullbackEntry = "3B. PULLBACK ENTRY QUALITY"
+usePullbackEntry = input.bool(true, "Use pullback reaction entry as main C", group=gPullbackEntry)
+allowReactionWithoutSweep = input.bool(true, "Allow reaction C without sweep", group=gPullbackEntry)
+pullbackEdgePct = input.float(0.55, "Entry edge size of correction", minval=0.10, maxval=0.90, step=0.05, group=gPullbackEntry)
+edgeTouchAtr = input.float(0.05, "Edge touch buffer x ATR", minval=0.0, maxval=2.0, step=0.01, group=gPullbackEntry)
+maxLongClosePos = input.float(0.70, "Max LONG close position in correction", minval=0.10, maxval=1.00, step=0.05, group=gPullbackEntry)
+minShortClosePos = input.float(0.30, "Min SHORT close position in correction", minval=0.00, maxval=0.90, step=0.05, group=gPullbackEntry)
+minReactionCloseStrength = input.float(0.55, "Min reaction close strength", minval=0.50, maxval=0.95, step=0.05, group=gPullbackEntry)
+minReactionBodyAtr = input.float(0.03, "Min reaction body x ATR", minval=0.0, maxval=5.0, step=0.01, group=gPullbackEntry)
+maxReactionBodyAtr = input.float(0.75, "Max reaction body x ATR", minval=0.1, maxval=10.0, step=0.05, group=gPullbackEntry)
+maxCloseOutsideCorrAtr = input.float(0.00, "Max close outside correction x ATR", minval=0.0, maxval=3.0, step=0.01, group=gPullbackEntry)
+
+useRejectionEntry = input.bool(true, "Use rejection entry near correction edge", group=gPullbackEntry)
+rejectionEdgePct = input.float(0.32, "Rejection edge size of correction", minval=0.10, maxval=0.70, step=0.02, group=gPullbackEntry)
+maxLongRejectionClosePos = input.float(0.45, "Max LONG rejection close position", minval=0.05, maxval=0.80, step=0.05, group=gPullbackEntry)
+minShortRejectionClosePos = input.float(0.55, "Min SHORT rejection close position", minval=0.20, maxval=0.95, step=0.05, group=gPullbackEntry)
+minRejectionWickPct = input.float(0.22, "Min rejection wick of candle", minval=0.00, maxval=0.80, step=0.02, group=gPullbackEntry)
+longRejectionCloseStrength = input.float(0.45, "LONG rejection min candle close position", minval=0.20, maxval=0.90, step=0.05, group=gPullbackEntry)
+shortRejectionCloseStrength = input.float(0.55, "SHORT rejection max candle close position", minval=0.10, maxval=0.80, step=0.05, group=gPullbackEntry)
+maxRejectionBodyAtr = input.float(0.65, "Max rejection body x ATR", minval=0.05, maxval=5.00, step=0.05, group=gPullbackEntry)
+maxRejectionRangeAtr = input.float(1.80, "Max rejection candle range x ATR", minval=0.20, maxval=10.00, step=0.10, group=gPullbackEntry)
+
+gVisual = "4. VISUAL ONLY"
+showLongC = input.bool(true, "Show long C", group=gVisual)
+showShortC = input.bool(true, "Show short C", group=gVisual)
+showCSource = input.string("All CONT", "Show CONT source", options=["All CONT", "Sweep/Reclaim only", "Breakout only"], group=gVisual)
+showConfirmedOnly = input.bool(true, "Show only confirmed/closed bars", group=gVisual)
+showRecentOnly = input.bool(false, "Show only recent bars", group=gVisual)
+recentBars = input.int(300, "Recent bars amount", minval=10, maxval=5000, group=gVisual)
+alertMode = input.string("Raw CONT logic", "Alerts use", options=["Raw CONT logic", "Visible CONT only"], group=gVisual)
+
+atr = ta.atr(atrLen)
+fastEma = ta.ema(close, fastEmaLen)
+slowEma = ta.ema(close, slowEmaLen)
+
+emaGap = math.abs(fastEma - slowEma)
+slowSlope = slowEma - slowEma[5]
+[plusDI, minusDI, adxValue] = ta.dmi(adxLen, adxSmooth)
+trendProgressLong = close - ta.lowest(low, trendProgressLookback)
+trendProgressShort = ta.highest(high, trendProgressLookback) - close
+
+emaBull = close > slowEma and fastEma > slowEma and emaGap >= atr * minEmaGapAtr and slowSlope >= atr * minSlopeAtr
+emaBear = close < slowEma and fastEma < slowEma and emaGap >= atr * minEmaGapAtr and slowSlope <= -atr * minSlopeAtr
+
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+var float lastSwingHigh = na
+var float prevSwingHigh = na
+var float lastSwingLow = na
+var float prevSwingLow = na
+
+if not na(ph)
+    prevSwingHigh := lastSwingHigh
+    lastSwingHigh := ph
+
+if not na(pl)
+    prevSwingLow := lastSwingLow
+    lastSwingLow := pl
+
+swingBull = not na(lastSwingHigh) and not na(prevSwingHigh) and not na(lastSwingLow) and not na(prevSwingLow) and lastSwingHigh > prevSwingHigh and lastSwingLow > prevSwingLow
+swingBear = not na(lastSwingHigh) and not na(prevSwingHigh) and not na(lastSwingLow) and not na(prevSwingLow) and lastSwingHigh < prevSwingHigh and lastSwingLow < prevSwingLow
+
+bosUp = allowBOSOverride and not na(lastSwingHigh) and close > lastSwingHigh
+bosDown = allowBOSOverride and not na(lastSwingLow) and close < lastSwingLow
+
+autoBull = emaBull or (swingBull and close > slowEma) or bosUp
+autoBear = emaBear or (swingBear and close < slowEma) or bosDown
+
+rawLongAllowed = trendMode == "Both" or trendMode == "Long only" or (trendMode == "Auto" and autoBull)
+rawShortAllowed = trendMode == "Both" or trendMode == "Short only" or (trendMode == "Auto" and autoBear)
+
+rangeState = not emaBull and not emaBear and not swingBull and not swingBear
+
+// Strict anti-range gate. BOS alone can flip direction, but it cannot bypass this filter.
+// CONT is allowed only when there is measurable directional trend quality.
+longAntiRangeOk = not useAntiRange or (adxValue >= minAdx and plusDI > minusDI and emaGap >= atr * rangeMinEmaGapAtr and slowSlope >= atr * rangeMinSlopeAtr and trendProgressLong >= atr * minTrendProgressAtr)
+shortAntiRangeOk = not useAntiRange or (adxValue >= minAdx and minusDI > plusDI and emaGap >= atr * rangeMinEmaGapAtr and slowSlope <= -atr * rangeMinSlopeAtr and trendProgressShort >= atr * minTrendProgressAtr)
+
+longAllowed = rawLongAllowed and not rawShortAllowed and not (blockRange and rangeState) and longAntiRangeOk
+shortAllowed = rawShortAllowed and not rawLongAllowed and not (blockRange and rangeState) and shortAntiRangeOk
+
+var bool bullCorr = false
+var bool bearCorr = false
+var float corrLow = na
+var float corrHigh = na
+var int corrStartBar = na
+var int lastSignalBar = na
+var float trendHigh = na
+var float trendLow = na
+var bool pendingLongSweep = false
+var bool pendingShortSweep = false
+var float pendingLongBreak = na
+var float pendingShortBreak = na
+var int pendingLongBar = na
+var int pendingShortBar = na
+
+if longAllowed
+    trendHigh := na(trendHigh) ? high : math.max(trendHigh, high)
+else
+    trendHigh := na
+    bullCorr := false
+    pendingLongSweep := false
+    pendingLongBreak := na
+    pendingLongBar := na
+
+if shortAllowed
+    trendLow := na(trendLow) ? low : math.min(trendLow, low)
+else
+    trendLow := na
+    bearCorr := false
+    pendingShortSweep := false
+    pendingShortBreak := na
+    pendingShortBar := na
+
+realBullPullback = longAllowed and not na(trendHigh) and trendHigh - low >= atr * minPullbackAtr
+realBearPullback = shortAllowed and not na(trendLow) and high - trendLow >= atr * minPullbackAtr
+
+startBullCorr = longAllowed and not bullCorr and realBullPullback and low < low[1]
+startBearCorr = shortAllowed and not bearCorr and realBearPullback and high > high[1]
+
+if startBullCorr
+    bullCorr := true
+    bearCorr := false
+    corrLow := low
+    corrHigh := high
+    corrStartBar := bar_index
+
+if startBearCorr
+    bearCorr := true
+    bullCorr := false
+    corrLow := low
+    corrHigh := high
+    corrStartBar := bar_index
+
+corrAge = not na(corrStartBar) ? bar_index - corrStartBar : 100000
+corrRange = not na(corrLow) and not na(corrHigh) ? corrHigh - corrLow : na
+
+corrReady = corrAge >= minCorrBars and corrAge <= maxCorrBars and not na(corrRange) and corrRange >= atr * minCorrRangeAtr
+
+priorCorrLow = corrLow
+priorCorrHigh = corrHigh
+
+cooldownOk = na(lastSignalBar) or bar_index - lastSignalBar >= minBarsBetweenSignals
+entryRangeOk = high - low <= atr * maxEntryRangeAtr
+
+longCandleOk = not requireDirectionalClose or close > open
+shortCandleOk = not requireDirectionalClose or close < open
+
+// Mature local liquidity filter:
+// Uses levels from older bars only, so a C signal cannot be triggered by taking a low/high
+// that was created just 1-2 candles ago. This blocks pseudo-sweeps without forcing rare swing sweeps.
+matureLocalLow = ta.lowest(low[matureSweepExcludeBars], matureSweepLookback)
+matureLocalHigh = ta.highest(high[matureSweepExcludeBars], matureSweepLookback)
+longMatureSweepOk = not requireMatureLocalSweep or (not na(matureLocalLow) and low < matureLocalLow - atr * matureSweepBufferAtr)
+shortMatureSweepOk = not requireMatureLocalSweep or (not na(matureLocalHigh) and high > matureLocalHigh + atr * matureSweepBufferAtr)
+
+longSweepReclaim = not na(priorCorrLow) and longMatureSweepOk and low < priorCorrLow - atr * minSweepAtr and close > priorCorrLow + atr * reclaimBufferAtr
+shortSweepReclaim = not na(priorCorrHigh) and shortMatureSweepOk and high > priorCorrHigh + atr * minSweepAtr and close < priorCorrHigh - atr * reclaimBufferAtr
+
+longBreakoutCont = allowBreakoutContinuation and not na(priorCorrHigh) and close > priorCorrHigh and close > open
+shortBreakoutCont = allowBreakoutContinuation and not na(priorCorrLow) and close < priorCorrLow and close < open
+
+// Structured pullback breakout:
+// Catches continuation entries where price makes a real pullback, holds structure,
+// then breaks the correction high/low without needing a sweep.
+// This is intentionally stricter than the old generic breakout continuation.
+longStructBodyOk = close > open and close - open >= atr * structMinBodyAtr
+shortStructBodyOk = close < open and open - close >= atr * structMinBodyAtr
+longStructPrevOk = not structRequirePrevBarBreak or close > high[1]
+shortStructPrevOk = not structRequirePrevBarBreak or close < low[1]
+longStructuredBreakout = allowStructuredPullbackBreakout and not na(priorCorrHigh) and close > priorCorrHigh + atr * structBreakoutBufferAtr and longStructBodyOk and longStructPrevOk
+shortStructuredBreakout = allowStructuredPullbackBreakout and not na(priorCorrLow) and close < priorCorrLow - atr * structBreakoutBufferAtr and shortStructBodyOk and shortStructPrevOk
+
+
+// Pullback / rejection entry:
+// Same C signal, but the trigger is moved closer to the correction edge.
+// In rejection mode, C can appear near point 1: when price reaches the pullback edge
+// and shows rejection/weakness, before the confirmation candle already travels too far.
+corrDenom = not na(corrRange) ? math.max(corrRange, syminfo.mintick) : na
+corrClosePos = not na(corrDenom) and not na(priorCorrLow) ? (close - priorCorrLow) / corrDenom : na
+barRange = math.max(high - low, syminfo.mintick)
+bodySize = math.abs(close - open)
+barClosePos = (close - low) / barRange
+upperWick = high - math.max(open, close)
+lowerWick = math.min(open, close) - low
+upperWickPct = upperWick / barRange
+lowerWickPct = lowerWick / barRange
+
+longTouchedEntryEdge = not na(priorCorrLow) and not na(corrRange) and low <= priorCorrLow + corrRange * pullbackEdgePct + atr * edgeTouchAtr
+shortTouchedEntryEdge = not na(priorCorrHigh) and not na(corrRange) and high >= priorCorrHigh - corrRange * pullbackEdgePct - atr * edgeTouchAtr
+
+longTouchedRejectionEdge = not na(priorCorrLow) and not na(corrRange) and low <= priorCorrLow + corrRange * rejectionEdgePct + atr * edgeTouchAtr
+shortTouchedRejectionEdge = not na(priorCorrHigh) and not na(corrRange) and high >= priorCorrHigh - corrRange * rejectionEdgePct - atr * edgeTouchAtr
+
+longCloseStillInPullback = not na(corrClosePos) and corrClosePos <= maxLongClosePos and close <= priorCorrHigh + atr * maxCloseOutsideCorrAtr
+shortCloseStillInPullback = not na(corrClosePos) and corrClosePos >= minShortClosePos and close >= priorCorrLow - atr * maxCloseOutsideCorrAtr
+
+longCloseInRejectionZone = not na(corrClosePos) and corrClosePos <= maxLongRejectionClosePos and close >= priorCorrLow - atr * maxCloseOutsideCorrAtr
+shortCloseInRejectionZone = not na(corrClosePos) and corrClosePos >= minShortRejectionClosePos and close <= priorCorrHigh + atr * maxCloseOutsideCorrAtr
+
+longReactionCandle = close > open and close >= low + barRange * minReactionCloseStrength and bodySize >= atr * minReactionBodyAtr and bodySize <= atr * maxReactionBodyAtr
+shortReactionCandle = close < open and close <= high - barRange * minReactionCloseStrength and bodySize >= atr * minReactionBodyAtr and bodySize <= atr * maxReactionBodyAtr
+
+longRejectionCandle = bodySize <= atr * maxRejectionBodyAtr and barRange <= atr * maxRejectionRangeAtr and (lowerWickPct >= minRejectionWickPct or barClosePos >= longRejectionCloseStrength)
+shortRejectionCandle = bodySize <= atr * maxRejectionBodyAtr and barRange <= atr * maxRejectionRangeAtr and (upperWickPct >= minRejectionWickPct or barClosePos <= shortRejectionCloseStrength)
+
+longEntryTrigger = useRejectionEntry ? (longTouchedRejectionEdge and longCloseInRejectionZone and longRejectionCandle) : (longTouchedEntryEdge and longCloseStillInPullback and longReactionCandle)
+shortEntryTrigger = useRejectionEntry ? (shortTouchedRejectionEdge and shortCloseInRejectionZone and shortRejectionCandle) : (shortTouchedEntryEdge and shortCloseStillInPullback and shortReactionCandle)
+
+longPullbackReaction = usePullbackEntry and longAllowed and bullCorr and corrReady and cooldownOk and entryRangeOk and longEntryTrigger and (allowReactionWithoutSweep or longSweepReclaim)
+shortPullbackReaction = usePullbackEntry and shortAllowed and bearCorr and corrReady and cooldownOk and entryRangeOk and shortEntryTrigger and (allowReactionWithoutSweep or shortSweepReclaim)
+
+rawLongSweepSetup = longAllowed and bullCorr and corrReady and cooldownOk and entryRangeOk and longCandleOk and longSweepReclaim
+rawShortSweepSetup = shortAllowed and bearCorr and corrReady and cooldownOk and entryRangeOk and shortCandleOk and shortSweepReclaim
+
+immediateSweepMode = sweepEntryMode == "Immediate"
+hybridSweepMode = sweepEntryMode == "Hybrid"
+confirmedSweepMode = sweepEntryMode == "Confirmed"
+
+strongLongSweepSetup = rawLongSweepSetup and not na(priorCorrLow) and low < priorCorrLow - atr * strongSweepAtr and close > priorCorrLow + atr * strongReclaimBufferAtr
+strongShortSweepSetup = rawShortSweepSetup and not na(priorCorrHigh) and high > priorCorrHigh + atr * strongSweepAtr and close < priorCorrHigh - atr * strongReclaimBufferAtr
+
+longSweepNeedsConfirmation = confirmedSweepMode and rawLongSweepSetup or hybridSweepMode and rawLongSweepSetup and not strongLongSweepSetup
+shortSweepNeedsConfirmation = confirmedSweepMode and rawShortSweepSetup or hybridSweepMode and rawShortSweepSetup and not strongShortSweepSetup
+
+if longSweepNeedsConfirmation
+    pendingLongSweep := true
+    pendingShortSweep := false
+    pendingLongBreak := high
+    pendingLongBar := bar_index
+
+if shortSweepNeedsConfirmation
+    pendingShortSweep := true
+    pendingLongSweep := false
+    pendingShortBreak := low
+    pendingShortBar := bar_index
+
+longPendingExpired = pendingLongSweep and not na(pendingLongBar) and bar_index - pendingLongBar > sweepConfirmBars
+shortPendingExpired = pendingShortSweep and not na(pendingShortBar) and bar_index - pendingShortBar > sweepConfirmBars
+
+if longPendingExpired
+    pendingLongSweep := false
+    pendingLongBreak := na
+    pendingLongBar := na
+
+if shortPendingExpired
+    pendingShortSweep := false
+    pendingShortBreak := na
+    pendingShortBar := na
+
+longSweepConfirmed = pendingLongSweep and bar_index > pendingLongBar and bar_index - pendingLongBar <= sweepConfirmBars and longAllowed and bullCorr and corrReady and cooldownOk and entryRangeOk and longCandleOk and close > pendingLongBreak
+shortSweepConfirmed = pendingShortSweep and bar_index > pendingShortBar and bar_index - pendingShortBar <= sweepConfirmBars and shortAllowed and bearCorr and corrReady and cooldownOk and entryRangeOk and shortCandleOk and close < pendingShortBreak
+
+longSweepEntry = immediateSweepMode ? rawLongSweepSetup : hybridSweepMode ? (strongLongSweepSetup or longSweepConfirmed) : longSweepConfirmed
+shortSweepEntry = immediateSweepMode ? rawShortSweepSetup : hybridSweepMode ? (strongShortSweepSetup or shortSweepConfirmed) : shortSweepConfirmed
+
+longBreakoutEntry = longAllowed and bullCorr and corrReady and cooldownOk and entryRangeOk and longCandleOk and (longBreakoutCont or longStructuredBreakout)
+shortBreakoutEntry = shortAllowed and bearCorr and corrReady and cooldownOk and entryRangeOk and shortCandleOk and (shortBreakoutCont or shortStructuredBreakout)
+
+// Final CONT logic:
+// Default mode uses pullback reaction entries only. This keeps C near the entry zone.
+// If Use pullback reaction entry is OFF, the script falls back to the old HYBRID_PLUS logic.
+longCONT = usePullbackEntry ? longPullbackReaction : (longSweepEntry or longBreakoutEntry)
+shortCONT = usePullbackEntry ? shortPullbackReaction : (shortSweepEntry or shortBreakoutEntry)
+
+if bullCorr and not longCONT
+    corrLow := na(corrLow) ? low : math.min(corrLow, low)
+    corrHigh := na(corrHigh) ? high : math.max(corrHigh, high)
+
+if bearCorr and not shortCONT
+    corrHigh := na(corrHigh) ? high : math.max(corrHigh, high)
+    corrLow := na(corrLow) ? low : math.min(corrLow, low)
+
+if longCONT
+    pendingLongSweep := false
+    pendingLongBreak := na
+    pendingLongBar := na
+    bullCorr := false
+    corrLow := na
+    corrHigh := na
+    corrStartBar := na
+    lastSignalBar := bar_index
+    trendHigh := high
+
+if shortCONT
+    pendingShortSweep := false
+    pendingShortBreak := na
+    pendingShortBar := na
+    bearCorr := false
+    corrLow := na
+    corrHigh := na
+    corrStartBar := na
+    lastSignalBar := bar_index
+    trendLow := low
+
+if corrAge > maxCorrBars
+    pendingLongSweep := false
+    pendingShortSweep := false
+    pendingLongBreak := na
+    pendingShortBreak := na
+    pendingLongBar := na
+    pendingShortBar := na
+    bullCorr := false
+    bearCorr := false
+    corrLow := na
+    corrHigh := na
+    corrStartBar := na
+
+// ─────────────────────────────────────────────────────────────
+// VISUAL: CONT ONLY
+// These settings do not change raw CONT logic.
+// They only decide which raw CONT signals are drawn.
+// ─────────────────────────────────────────────────────────────
+longSweepSource = usePullbackEntry ? longPullbackReaction : (immediateSweepMode ? longSweepReclaim : hybridSweepMode ? (strongLongSweepSetup or longSweepConfirmed) : longSweepConfirmed)
+shortSweepSource = usePullbackEntry ? shortPullbackReaction : (immediateSweepMode ? shortSweepReclaim : hybridSweepMode ? (strongShortSweepSetup or shortSweepConfirmed) : shortSweepConfirmed)
+longBreakoutSource = usePullbackEntry ? false : longBreakoutEntry
+shortBreakoutSource = usePullbackEntry ? false : shortBreakoutEntry
+longSourceOk = showCSource == "All CONT" or (showCSource == "Sweep/Reclaim only" and longSweepSource) or (showCSource == "Breakout only" and longBreakoutSource)
+shortSourceOk = showCSource == "All CONT" or (showCSource == "Sweep/Reclaim only" and shortSweepSource) or (showCSource == "Breakout only" and shortBreakoutSource)
+// Hard closed-bar mode: signals are plotted only after the candle is confirmed.
+confirmedOk = barstate.isconfirmed
+recentOk = not showRecentOnly or bar_index >= last_bar_index - recentBars
+
+visibleLongCONT = showLongC and longCONT and longSourceOk and confirmedOk and recentOk
+visibleShortCONT = showShortC and shortCONT and shortSourceOk and confirmedOk and recentOk
+
+plotshape(visibleLongCONT, title="CONT LONG", location=location.belowbar, style=shape.labelup, size=size.tiny, color=color.new(color.lime, 0), text="C", textcolor=color.white, editable=false, force_overlay=true)
+plotshape(visibleShortCONT, title="CONT SHORT", location=location.abovebar, style=shape.labeldown, size=size.tiny, color=color.new(color.red, 0), text="C", textcolor=color.white, editable=false, force_overlay=true)
+
+// ALERTS
+// One neutral alert only. No direction in the alert message.
+// The alert fires only after the signal candle is closed/confirmed.
+alertLongClosed = longCONT and barstate.isconfirmed
+alertShortClosed = shortCONT and barstate.isconfirmed
+alertAnyClosed = alertLongClosed or alertShortClosed
+
+alertcondition(alertAnyClosed, title="CONT SIGNAL CLOSED", message="{{ticker}} {{interval}}")
